@@ -105,6 +105,22 @@ try {
   assert.equal(audioTurn.totals.total, 12000 + 14500);
   console.log('✔ audio turn with English reply\n');
 
+  // 9. First turn exactly as older apps send it: form-data state "null" (was a 400 bug),
+  //    then a follow-up turn whose state is the form-data JSON from the previous answer.
+  const form2 = new FormData();
+  form2.append('audio', new Blob([await readFile('test-audio/te-mixed.wav')], { type: 'audio/wav' }), 'r.wav');
+  form2.append('state', 'null');
+  form2.append('language', 'te');
+  const first: any = await (await fetch(`${base}/voice/turn`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: form2 })).json();
+  assert.equal(first.reply?.kind, 'confirm', JSON.stringify(first));
+  const form3 = new FormData();
+  form3.append('audio', new Blob([await readFile('test-audio/te-mixed.wav')], { type: 'audio/wav' }), 'r.wav');
+  form3.append('state', JSON.stringify(first.state));
+  form3.append('language', 'te');
+  const second = await fetch(`${base}/voice/turn`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: form3 });
+  assert.equal(second.status, 200);
+  console.log('✔ form-data first turn with state "null", then a follow-up turn\n');
+
   console.log('All conversation checks passed.');
 } finally {
   server.close();

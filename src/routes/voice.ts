@@ -195,6 +195,10 @@ function parseState(raw: unknown): TurnState {
       throw new HttpError(400, 'state is not valid JSON');
     }
   }
+  // Form-data can only carry text, so a new bill arrives as the string "null".
+  if (value == null) {
+    return emptyState();
+  }
   return turnStateSchema.parse(value);
 }
 
