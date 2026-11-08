@@ -9,12 +9,12 @@ import { Shopkeeper, type Language } from '../models/Shopkeeper.js';
 import { shopId } from '../middleware/auth.js';
 import { HttpError } from '../lib/errors.js';
 import { buildDraft, type DraftCustomer } from '../lib/billDraft.js';
-import { STT_LANGUAGES, transcribe, type Transcription } from '../services/gnani.js';
+import { speak, STT_LANGUAGES, transcribe, TTS_MAX_CHARS } from '../services/gnani.js';
 import { extractBill } from '../services/extract.js';
 
 const router = Router();
 
-// Vercel rejects request bodies over ~4.5 MB; Gnani takes at most 30 s of audio.
+// Vercel rejects request bodies over ~4.5 MB. A 90 s phone recording (AAC, 32 kbps) is ~360 KB.
 const MAX_AUDIO_BYTES = 4 * 1024 * 1024;
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -63,7 +63,7 @@ async function loadContext(req: Request) {
   return { language: shop.language, customers };
 }
 
-async function runStt(req: Request, language: Language, customers: DraftCustomer[]): Promise<Transcription> {
+async function runStt(req: Request, language: Language, customers: DraftCustomer[]) {
   if (!req.file) {
     throw new HttpError(400, 'Attach the recording as form-data field "audio"');
   }
@@ -123,11 +123,37 @@ router.post('/bill', upload.single('audio'), async (req, res) => {
     transcript: stt.transcript,
     detectedLanguage: stt.detectedLanguage,
     truncated: stt.truncated,
+    seconds: stt.seconds,
     draft,
     extraction,
-    timings: { sttMs: stt.ms, llmMs: ms },
+    timings: { sttMs: stt.ms, llmMs: ms, pieces: stt.pieces },
     model,
   });
+});
+
+const speakQuery = z.object({
+  // UTF-8 text as base64url, so Telugu/Hindi stay short in the URL
+  t: z.string().min(1).max(4 * TTS_MAX_CHARS),
+  lang: z.string().max(10).optional(),
+});
+
+/**
+ * GET /api/voice/speak?t=<base64url text>&lang=te-IN → audio/mpeg
+ * Reads text aloud (the app plays the transcript back after a voice bill). A GET so the
+ * phone's media player can stream it directly with the login header.
+ */
+router.get('/speak', async (req, res) => {
+  const { t, lang } = speakQuery.parse(req.query);
+  const text = Buffer.from(t, 'base64url').toString('utf8').trim();
+  if (!text) {
+    throw new HttpError(400, 'Nothing to read');
+  }
+  if (text.length > TTS_MAX_CHARS) {
+    throw new HttpError(400, `Text is too long to read in one go (max ${TTS_MAX_CHARS} characters)`);
+  }
+  const audio = await speak(text, lang);
+  res.set('Cache-Control', 'private, max-age=600');
+  res.type('audio/mpeg').send(audio);
 });
 
 export default router;

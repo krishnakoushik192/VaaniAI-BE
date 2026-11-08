@@ -70,7 +70,7 @@ const errorHandler: ErrorRequestHandler = (err: unknown, _req, res, _next) => {
   }
   if (err instanceof multer.MulterError) {
     const tooBig = err.code === 'LIMIT_FILE_SIZE';
-    res.status(tooBig ? 413 : 400).json({ error: tooBig ? 'Recording is too large (max 4 MB / 30 seconds)' : err.message });
+    res.status(tooBig ? 413 : 400).json({ error: tooBig ? 'Recording is too large (max 4 MB / 90 seconds)' : err.message });
     return;
   }
   if (err instanceof mongoose.Error.CastError) {
