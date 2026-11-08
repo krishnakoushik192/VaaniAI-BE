@@ -30,8 +30,6 @@ export const extractionSchema = z.object({
 });
 export type Extraction = z.infer<typeof extractionSchema>;
 
-// The same shape as plain JSON Schema, which is what Gemini's response_format takes.
-const jsonSchema = z.toJSONSchema(extractionSchema);
 
 const SYSTEM_PROMPT = `You read transcripts of a shopkeeper at an Indian kirana (grocery) shop speaking a bill aloud.
 The speech can be Telugu, Hindi, English or a mix, in any script. Extract the bill exactly as spoken.
@@ -65,25 +63,18 @@ function gemini(): GoogleGenAI {
 
 export type KnownCustomer = { id: string; name: string };
 
-export async function extractBill(
-  transcript: string,
-  customers: KnownCustomer[],
-): Promise<{ extraction: Extraction; model: string; ms: number }> {
+/** One Gemini call that must return JSON matching `schema`. Shared by bill reading and bill editing. */
+export async function geminiJson<T>(systemInstruction: string, input: string, schema: z.ZodType<T>): Promise<{ data: T; model: string; ms: number }> {
   const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
-  const known = customers.length
-    ? customers.map(c => `${c.id}\t${c.name}`).join('\n')
-    : '(none)';
-  const input = `KNOWN CUSTOMERS (id<TAB>name):\n${known}\n\nTRANSCRIPT:\n${transcript}`;
-
   const started = Date.now();
   let text: string | undefined;
   try {
     const interaction = await gemini().interactions.create({
       model,
       store: false, // don't keep the conversation on Google's side
-      system_instruction: SYSTEM_PROMPT,
+      system_instruction: systemInstruction,
       input,
-      response_format: { type: 'text', mime_type: 'application/json', schema: jsonSchema },
+      response_format: { type: 'text', mime_type: 'application/json', schema: z.toJSONSchema(schema) },
       generation_config: { temperature: 0, thinking_level: 'low' },
     });
     text = interaction.output_text;
@@ -106,10 +97,22 @@ export async function extractBill(
     console.error('Gemini returned non-JSON:', text);
     throw new HttpError(502, 'AI returned an unreadable answer, please try again');
   }
-  const result = extractionSchema.safeParse(parsed);
+  const result = schema.safeParse(parsed);
   if (!result.success) {
     console.error('Gemini JSON failed validation:', result.error.issues, text);
     throw new HttpError(502, 'AI returned an unexpected answer, please try again');
   }
-  return { extraction: result.data, model, ms: Date.now() - started };
+  return { data: result.data, model, ms: Date.now() - started };
+}
+
+export const knownCustomersText = (customers: KnownCustomer[]) =>
+  customers.length ? customers.map(c => `${c.id}\t${c.name}`).join('\n') : '(none)';
+
+export async function extractBill(
+  transcript: string,
+  customers: KnownCustomer[],
+): Promise<{ extraction: Extraction; model: string; ms: number }> {
+  const input = `KNOWN CUSTOMERS (id<TAB>name):\n${knownCustomersText(customers)}\n\nTRANSCRIPT:\n${transcript}`;
+  const { data, model, ms } = await geminiJson(SYSTEM_PROMPT, input, extractionSchema);
+  return { extraction: data, model, ms };
 }

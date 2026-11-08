@@ -11,6 +11,8 @@ import { HttpError } from '../lib/errors.js';
 import { buildDraft, type DraftCustomer } from '../lib/billDraft.js';
 import { speak, STT_LANGUAGES, transcribe, TTS_MAX_CHARS } from '../services/gnani.js';
 import { extractBill } from '../services/extract.js';
+import { readTurn } from '../services/billTurn.js';
+import { applyEdits, buildReply, emptyState, retryReply, totals, type TurnState } from '../lib/billState.js';
 
 const router = Router();
 
@@ -154,6 +156,108 @@ router.get('/speak', async (req, res) => {
   const audio = await speak(text, lang);
   res.set('Cache-Control', 'private, max-age=600');
   res.type('audio/mpeg').send(audio);
+});
+
+
+// ---------- conversation: one turn ----------
+
+const turnItem = z.object({
+  id: z.string().min(1).max(20),
+  name: z.string().max(100),
+  localName: z.string().max(100),
+  qty: z.number().positive().nullable(),
+  unit: z.string().max(20),
+  rate: z.number().int().min(0).nullable(),
+  lineAmount: z.number().int().min(0).nullable().optional(),
+});
+const turnStateSchema = z.object({
+  items: z.array(turnItem).max(100),
+  customerId: objectId.nullable(),
+  method: z.enum(['cash', 'upi', 'khata']).nullable(),
+  discount: z.number().int().min(0),
+  question: z.object({ itemId: z.string().max(20), field: z.enum(['qty', 'rate']) }).nullable(),
+});
+const turnBody = z.object({
+  state: z.union([z.string().max(50_000), z.record(z.string(), z.unknown())]).nullable().optional(), // null = new bill
+  text: z.string().max(5000).optional(), // typed instead of spoken (also used by tests)
+  language: z.enum(['te', 'hi', 'en']).optional(), // language the app speaks back in
+});
+
+function parseState(raw: unknown): TurnState {
+  if (raw == null || raw === '') {
+    return emptyState();
+  }
+  let value = raw;
+  if (typeof raw === 'string') {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      throw new HttpError(400, 'state is not valid JSON');
+    }
+  }
+  // Form-data can only carry text, so a new bill arrives as the string "null".
+  if (value == null) {
+    return emptyState();
+  }
+  return turnStateSchema.parse(value);
+}
+
+/**
+ * POST /api/voice/turn  (form-data: audio, state, language)  or JSON { text, state, language }
+ * One step of the voice-bill conversation: what the shopkeeper said is applied to the bill on
+ * screen (new items, corrections, removals, answers to the last question). Returns the new bill
+ * state, the totals (computed here) and what the app should say next. Saves nothing.
+ */
+router.post('/turn', upload.single('audio'), async (req, res) => {
+  const body = turnBody.parse(req.body ?? {});
+  const state = parseState(body.state);
+  const { language: shopLanguage, customers } = await loadContext(req);
+  const lang = body.language ?? shopLanguage;
+
+  let said = body.text?.trim() ?? '';
+  let stt: Awaited<ReturnType<typeof runStt>> | null = null;
+  if (req.file) {
+    stt = await runStt(req, shopLanguage, customers);
+    said = stt.transcript;
+  }
+
+  const findCustomer = (id: string | null) => customers.find(c => c.id === id) ?? null;
+  if (!said) {
+    // Nothing heard: keep the bill as it is; the app asks again.
+    const customer = findCustomer(state.customerId);
+    res.json({
+      heard: false,
+      transcript: '',
+      state,
+      customer: customer && { id: customer.id, name: customer.customerName, pastDues: customer.pastDues },
+      spokenCustomerName: null,
+      totals: totals(state),
+      reply: retryReply(lang),
+      timings: { sttMs: stt?.ms ?? 0, llmMs: 0 },
+    });
+    return;
+  }
+
+  const { data: edits, ms } = await readTurn(
+    said,
+    state,
+    customers.map(c => ({ id: c.id, name: c.customerName })),
+    lang,
+  );
+  const next = applyEdits(state, edits, new Set(customers.map(c => c.id)));
+  const customer = findCustomer(next.customerId);
+  const reply = buildReply(next, lang, customer && { name: customer.customerName, pastDues: customer.pastDues });
+  res.json({
+    heard: true,
+    transcript: said,
+    detectedLanguage: stt?.detectedLanguage ?? null,
+    state: next,
+    customer: customer && { id: customer.id, name: customer.customerName, pastDues: customer.pastDues },
+    spokenCustomerName: !customer && edits.customerName ? edits.customerName : null,
+    totals: totals(next),
+    reply,
+    timings: { sttMs: stt?.ms ?? 0, llmMs: ms },
+  });
 });
 
 export default router;

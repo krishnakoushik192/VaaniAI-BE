@@ -16,7 +16,8 @@
     "smoke": "tsx scripts/smoke.ts",
     "make-audio": "tsx --env-file-if-exists=.env scripts/make-test-audio.ts",
     "voice-test": "tsx --env-file-if-exists=.env scripts/voice-test.ts",
-    "test:audio": "tsx scripts/audio-split-test.ts"
+    "test:audio": "tsx scripts/audio-split-test.ts",
+    "conversation-test": "tsx --env-file-if-exists=.env scripts/conversation-test.ts"
   },
   "dependencies": {
     "@google/genai": "^3.0.0",
