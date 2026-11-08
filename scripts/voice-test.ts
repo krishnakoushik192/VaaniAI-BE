@@ -88,6 +88,16 @@ try {
   }
   console.log(`  customer: ${r.body.draft?.customer?.customerName ?? '-'}  method: ${r.body.draft?.method}  total ${rupees(r.body.draft?.total)}\n`);
 
+  // Read-back: the app plays GET /voice/speak with the transcript
+  {
+    const text = 'రమేష్ గారు, two kg rice కిలో అరవై రూపాయలు, ఖాతాలో రాయండి.';
+    const t = Date.now();
+    const res = await fetch(`${base}/voice/speak?t=${Buffer.from(text).toString('base64url')}&lang=te-IN`, { headers: { authorization: `Bearer ${token}` } });
+    const audio = Buffer.from(await res.arrayBuffer());
+    console.log(`━━ /voice/speak  HTTP ${res.status} ${res.headers.get('content-type')}  ${Math.round(audio.length / 1024)} KB  ${Date.now() - t} ms
+`);
+  }
+
   if (firstDraft) {
     r = await call('POST', '/transactions', {
       kind: 'bill',
