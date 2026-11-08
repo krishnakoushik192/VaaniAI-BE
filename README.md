@@ -59,12 +59,15 @@ All routes except `/auth/*` need the header `Authorization: Bearer <token>`.
 | POST | `/api/customers` | `{ customerName, phoneNumber?, openingDue? }` |
 | GET / PATCH / DELETE | `/api/customers/:id` | delete only works when dues are 0 |
 | POST | `/api/transactions` | bill: `{ kind:"bill", txnId, customerId?, method:"cash"/"upi"/"khata", items:[{name,qty,unit,rate}], discount?, billNo? }`<br>payment: `{ kind:"payment", txnId, customerId, method:"cash"/"upi", amount }` |
+| POST | `/api/voice/turn` | form-data `audio`, `state` (bill so far, JSON or null), `language` (te/hi/en), or JSON `{ text, state, language }` → `{ transcript, state, customer, totals, reply: { kind: confirm/question/retry, text } }`. One step of the voice-bill conversation: adds, corrections, removals and answers to questions. **Does not save** |
 | POST | `/api/voice/bill` | form-data `audio` (≤30 s), `customerId?`, `languages?` → `{ transcript, draft }`. **Does not save** |
 | POST | `/api/voice/extract` | `{ transcript, customerId? }` → `{ draft }` (same as above, from text) |
 | POST | `/api/voice/transcribe` | form-data `audio` → `{ transcript, detectedLanguage }` |
 | GET | `/api/health` | no auth |
 
-**Voice flow:** audio → Gnani STT (Prisma v3.0, using the shop's customer names as key terms) → Gemini (`gemini-3.5-flash-lite`, JSON schema) reads customer, items, qty, unit, prices and payment method → `src/lib/billDraft.ts` computes every amount in paise and flags lines that need checking → the app shows the draft → the shopkeeper confirms → the app saves it with `POST /api/transactions`.
+**Conversation (`/voice/turn`):** speech → Gnani STT → Gemini returns *edits* to the current bill (`src/services/billTurn.ts`) → `src/lib/billState.ts` applies them, computes totals, finds a missing quantity or price to ask about, and writes the spoken reply (Telugu, Hindi or English), including the customer's old due. Test it live with `npm run conversation-test`.
+
+**One-shot voice flow (`/voice/bill`):** audio → Gnani STT (Prisma v3.0, using the shop's customer names as key terms) → Gemini (`gemini-3.5-flash-lite`, JSON schema) reads customer, items, qty, unit, prices and payment method → `src/lib/billDraft.ts` computes every amount in paise and flags lines that need checking → the app shows the draft → the shopkeeper confirms → the app saves it with `POST /api/transactions`.
 
 See **[TESTING.md](TESTING.md)** for how to test every API by hand.
 
