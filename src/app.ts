@@ -9,6 +9,8 @@ import authRoutes from './routes/auth.js';
 import shopkeeperRoutes from './routes/shopkeeper.js';
 import customerRoutes from './routes/customers.js';
 import transactionRoutes from './routes/transactions.js';
+import voiceRoutes from './routes/voice.js';
+import multer from 'multer';
 
 const app = express();
 app.disable('x-powered-by');
@@ -37,6 +39,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/shopkeeper', requireAuth, shopkeeperRoutes);
 app.use('/api/customers', requireAuth, customerRoutes);
 app.use('/api/transactions', requireAuth, transactionRoutes);
+app.use('/api/voice', requireAuth, voiceRoutes);
 
 app.use(() => {
   throw new HttpError(404, 'Route not found');
@@ -63,6 +66,11 @@ const errorHandler: ErrorRequestHandler = (err: unknown, _req, res, _next) => {
   if (err instanceof mongoose.mongo.MongoServerError && err.code === 11000) {
     const field = Object.keys(err.keyPattern ?? {}).find(k => k in DUPLICATE_MESSAGES);
     res.status(409).json({ error: (field && DUPLICATE_MESSAGES[field]) || 'Already exists' });
+    return;
+  }
+  if (err instanceof multer.MulterError) {
+    const tooBig = err.code === 'LIMIT_FILE_SIZE';
+    res.status(tooBig ? 413 : 400).json({ error: tooBig ? 'Recording is too large (max 4 MB / 30 seconds)' : err.message });
     return;
   }
   if (err instanceof mongoose.Error.CastError) {
