@@ -147,6 +147,15 @@ const WORDS = {
     askQty: (n: string) => `How much ${n}? Tell me the quantity.`,
     askRate: (n: string) => `What is the price of ${n}?`,
     retry: 'I could not catch the items. Please say them again.',
+    // short read-back and one question for everything missing
+    and: ' and ',
+    askQtyMany: (list: string) => `How much ${list}?`,
+    askRateMany: (list: string) => `Price of ${list}?`,
+    items: (n: number) => (n === 1 ? '1 item' : `${n} items`),
+    amount: (t: string) => `${t} rupees`,
+    methods: { cash: 'cash', upi: 'UPI', khata: 'khata' },
+    dueTotal: (d: string, a: string) => `Old due ${d}, total ${a}.`,
+    save: 'Save?',
   },
   te: {
     rupees: 'రూపాయలు',
@@ -158,6 +167,14 @@ const WORDS = {
     askQty: (n: string) => `${n} ఎంత కావాలి? పరిమాణం చెప్పండి.`,
     askRate: (n: string) => `${n} ధర ఎంత?`,
     retry: 'వస్తువులు సరిగా వినిపించలేదు. దయచేసి మళ్ళీ చెప్పండి.',
+    and: ', ',
+    askQtyMany: (list: string) => `${list} ఎంత కావాలి?`,
+    askRateMany: (list: string) => `${list} ధర ఎంత?`,
+    items: (n: number) => `${n} వస్తువులు`,
+    amount: (t: string) => `${t} రూపాయలు`,
+    methods: { cash: 'నగదు', upi: 'యూపీఐ', khata: 'ఖాతా' },
+    dueTotal: (d: string, a: string) => `పాత బాకీ ${d}, మొత్తం ${a}.`,
+    save: 'సేవ్ చేయనా?',
   },
   hi: {
     rupees: 'रुपये',
@@ -169,26 +186,65 @@ const WORDS = {
     askQty: (n: string) => `${n} कितना चाहिए? मात्रा बताइए।`,
     askRate: (n: string) => `${n} का दाम क्या है?`,
     retry: 'सामान ठीक से सुनाई नहीं दिया। कृपया फिर से बोलिए।',
+    and: ' और ',
+    askQtyMany: (list: string) => `${list} कितना चाहिए?`,
+    askRateMany: (list: string) => `${list} का दाम क्या है?`,
+    items: (n: number) => `${n} सामान`,
+    amount: (t: string) => `${t} रुपये`,
+    methods: { cash: 'नकद', upi: 'यूपीआई', khata: 'खाता' },
+    dueTotal: (d: string, a: string) => `पुराना बकाया ${d}, कुल ${a}।`,
+    save: 'सेव करूँ?',
   },
 } as const;
 
 /** 12000 paise → "120", 4550 → "45.50" */
 const money = (p: Paise) => (p % 100 === 0 ? String(p / 100) : (p / 100).toFixed(2));
 
-export type ReplyKind = 'confirm' | 'question' | 'retry';
+/** 'confirmed' = the shopkeeper said yes to the read-back: the app saves the bill. */
+export type ReplyKind = 'confirm' | 'question' | 'retry' | 'confirmed';
+
+/** Everything still missing, so it can be asked in one question. */
+export function missingFields(state: TurnState) {
+  return {
+    qty: state.items.filter(i => i.qty == null),
+    // an item with a line price only needs its quantity; the rate follows from it
+    rate: state.items.filter(i => i.rate == null && i.lineAmount == null),
+  };
+}
+
+const joinList = (names: string[], and: string) =>
+  names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')}${and}${names[names.length - 1]}`;
 
 export function buildReply(
   state: TurnState,
   lang: AppLanguage,
   customer: { name: string; pastDues: Paise } | null,
+  opts: { readAll?: boolean } = {},
 ): { kind: ReplyKind; text: string } {
   const w = WORDS[lang];
   if (!state.items.length) {
     return { kind: 'retry', text: w.retry };
   }
   if (state.question) {
-    const item = state.items.find(i => i.id === state.question!.itemId)!;
-    return { kind: 'question', text: state.question.field === 'qty' ? w.askQty(item.localName) : w.askRate(item.localName) };
+    const missing = missingFields(state);
+    if (missing.qty.length + missing.rate.length <= 1) {
+      const item = state.items.find(i => i.id === state.question!.itemId)!;
+      return { kind: 'question', text: state.question.field === 'qty' ? w.askQty(item.localName) : w.askRate(item.localName) };
+    }
+    const asks = [
+      missing.qty.length ? w.askQtyMany(joinList(missing.qty.map(i => i.localName), w.and)) : '',
+      missing.rate.length ? w.askRateMany(joinList(missing.rate.map(i => i.localName), w.and)) : '',
+    ];
+    return { kind: 'question', text: asks.filter(Boolean).join(' ') };
+  }
+  const { total } = totals(state);
+  if (!opts.readAll) {
+    // Short read-back: the items are on screen, so only the count, total and method are spoken.
+    const head = [customer?.name, w.items(state.items.length), w.amount(money(total)), state.method ? w.methods[state.method] : '']
+      .filter(Boolean)
+      .join(', ');
+    const due = customer && customer.pastDues > 0 && state.method === 'khata' ? ` ${w.dueTotal(money(customer.pastDues), money(customer.pastDues + total))}` : '';
+    return { kind: 'confirm', text: `${head}.${due} ${w.save}` };
   }
   const units = UNIT_WORDS[lang];
   const lines = state.items.map(i => {
@@ -196,7 +252,6 @@ export function buildReply(
     const amount = money(lineTotal({ qty: i.qty!, rate: i.rate! }));
     return `${i.qty}${unit ? ` ${unit}` : ''} ${i.localName}, ${amount} ${w.rupees}`;
   });
-  const { total } = totals(state);
   const parts = [customer ? w.forCustomer(customer.name) : '', `${lines.join('. ')}.`, w.total(money(total))];
   if (customer && customer.pastDues > 0) {
     parts.push(w.oldDue(money(customer.pastDues)));

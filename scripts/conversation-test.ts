@@ -81,6 +81,14 @@ try {
   assert.equal(r.totals.total, 3 * 6500 + 3 * 4000 + 2 * 2700);
   console.log(`✔ Telugu conversation: final total ₹${r.totals.total / 100}\n`);
 
+  // 6b. Saying "yes" to the short read-back saves (the bill is unchanged)
+  assert.equal(r.reply.kind, 'confirm');
+  const before = r.totals.total;
+  r = await say('అవును, సరే');
+  assert.equal(r.reply.kind, 'confirmed');
+  assert.equal(r.totals.total, before);
+  console.log('✔ spoken "yes" confirms the bill\n');
+
   // 7. Hindi app, price missing → asks the price
   state = null;
   r = await say('दो किलो प्याज़ और एक साबुन चालीस रुपये', 'hi');
@@ -90,6 +98,16 @@ try {
   assert.equal(r.reply.kind, 'confirm');
   assert.equal(r.totals.total, 2 * 3000 + 4000);
   console.log('✔ Hindi: missing price asked and filled\n');
+
+  // 7b. Several prices missing → asked in one question, answered in one go
+  state = null;
+  r = await say('2 kg rice, 1 litre oil, 1 kg sugar, cash', 'en');
+  assert.equal(r.reply.kind, 'question');
+  assert.match(r.reply.text, /^Price of .+, .+ and .+\?$/);
+  r = await say('rice 60 a kilo, oil 145, sugar 45', 'en');
+  assert.equal(r.reply.kind, 'confirm');
+  assert.equal(r.totals.total, 12000 + 14500 + 4500);
+  console.log('✔ one question for three missing prices\n');
 
   // 8. English app with a real recording (audio upload path)
   state = null;

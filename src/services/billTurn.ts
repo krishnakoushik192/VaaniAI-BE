@@ -3,7 +3,7 @@
 // lib/billState.ts applies the edits and does all the money maths.
 import { z } from 'zod';
 import { geminiJson, knownCustomersText, UNITS, type KnownCustomer } from './extract.js';
-import type { TurnState } from '../lib/billState.js';
+import { missingFields, type TurnState } from '../lib/billState.js';
 
 const LANGUAGE_NAMES = { te: 'Telugu', hi: 'Hindi', en: 'English' } as const;
 export type AppLanguage = keyof typeof LANGUAGE_NAMES;
@@ -13,6 +13,7 @@ export const turnSchema = z.object({
   matchedCustomerId: z.string().nullable(),
   paymentMethod: z.enum(['cash', 'upi', 'khata']).nullable(),
   discount: z.number().nullable(),
+  confirmed: z.boolean(),
   operations: z.array(
     z.object({
       op: z.enum(['add', 'update', 'remove']),
@@ -41,7 +42,8 @@ Operations:
 }).
 - "update": change an item already on the bill: itemId from CURRENT BILL; fill ONLY the fields that change,
   leave the others null. Use this for corrections ("not 3 kg, 2 kg rice", "sugar is 45 rupees") and for
-  answers to your QUESTION (the answer is about the item in the question).
+  answers to your QUESTION (the question may ask about several items at once; "oil 145, sugar 45" answers
+  both, each to its own item).
 - "remove": take an item off the bill (itemId from CURRENT BILL), e.g. "remove the soap", "no oil".
 - If the shopkeeper lists items again that are already on the bill, update them; do not add duplicates.
 - Extra items ("also 2 packets milk", "inka...", "aur...") are "add".
@@ -62,6 +64,9 @@ KNOWN CUSTOMERS that is the same person (match across scripts/spellings: "రమ
 paymentMethod: "khata" for credit / udhaar / write in book / ఖాతా / खाते में; "upi" for UPI / PhonePe /
 GPay / online; "cash" for cash / నగదు / नकद; null if not said now.
 discount: rupees off the whole bill if said now, else null.
+confirmed: true ONLY when you asked "Save?" (QUESTION is "SAVE?") and the shopkeeper agrees the bill is right
+with no change: yes / ok / correct / save / haan / ha / theek hai / sari / avunu / సరే / అవును / హా / हाँ / ठीक है.
+Anything else (a change, a new item, "no", "wait") → false. When confirmed is true, return no operations.
 If nothing about the bill was said, return no operations.`;
 
 const billText = (state: TurnState) =>
@@ -72,9 +77,13 @@ const billText = (state: TurnState) =>
     : '(empty)';
 
 export async function readTurn(said: string, state: TurnState, customers: KnownCustomer[], lang: AppLanguage) {
-  const q = state.question;
-  const asked = q ? state.items.find(i => i.id === q.itemId) : undefined;
-  const question = asked && q ? `You asked for the ${q.field === 'qty' ? 'QUANTITY' : 'PRICE'} of ${asked.id} (${asked.name}).` : '(none)';
+  const missing = missingFields(state);
+  const asks = [
+    ...missing.qty.map(i => `the QUANTITY of ${i.id} (${i.name})`),
+    ...missing.rate.map(i => `the PRICE of ${i.id} (${i.name})`),
+  ];
+  // No question and a complete bill = the read-back just asked "Save?".
+  const question = state.question && asks.length ? `You asked for ${asks.join(', ')}.` : state.items.length ? 'SAVE?' : '(none)';
   const input = [
     `KNOWN CUSTOMERS (id<TAB>name):\n${knownCustomersText(customers)}`,
     `CURRENT BILL (id<TAB>name<TAB>qty<TAB>rate in rupees):\n${billText(state)}`,

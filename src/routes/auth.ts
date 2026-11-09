@@ -28,6 +28,15 @@ router.post('/register', async (req, res) => {
   res.status(201).json({ token: signToken(shopkeeper.id), shopkeeper });
 });
 
+// Sign-in starts with the mobile number: the app asks whether it has an account, then shows
+// "enter passcode" (log in) or "create passcode" (sign up). Only a yes/no comes back, never a name.
+const checkBody = z.object({ mobileNumber });
+
+router.post('/check', async (req, res) => {
+  const { mobileNumber: mobile } = checkBody.parse(req.body);
+  res.json({ exists: (await Shopkeeper.exists({ mobileNumber: mobile })) != null });
+});
+
 const loginBody = z.object({ mobileNumber, passcode });
 
 router.post('/login', async (req, res) => {
