@@ -12,7 +12,8 @@ import { buildDraft, type DraftCustomer } from '../lib/billDraft.js';
 import { speak, STT_LANGUAGES, transcribe, TTS_MAX_CHARS } from '../services/gnani.js';
 import { extractBill } from '../services/extract.js';
 import { readTurn } from '../services/billTurn.js';
-import { applyEdits, buildReply, emptyState, retryReply, totals, type TurnState } from '../lib/billState.js';
+import { applyChoice, applyEdits, buildReply, emptyState, findCheck, retryReply, totals, type TurnState } from '../lib/billState.js';
+import { knownPrices, priceKey } from '../models/ItemPrice.js';
 
 const router = Router();
 
@@ -169,13 +170,21 @@ const turnItem = z.object({
   unit: z.string().max(20),
   rate: z.number().int().min(0).nullable(),
   lineAmount: z.number().int().min(0).nullable().optional(),
+  usualRate: z.number().int().min(0).nullable().optional(),
+  checked: z.boolean().optional(),
 });
+const turnCheck = z.union([
+  z.object({ kind: z.literal('amount'), itemId: z.string().max(20), field: z.enum(['rate', 'line']), options: z.tuple([z.number().int().min(0), z.number().int().min(0)]) }),
+  z.object({ kind: z.literal('customer'), options: z.tuple([objectId, objectId]) }),
+]);
 const turnStateSchema = z.object({
   items: z.array(turnItem).max(100),
   customerId: objectId.nullable(),
   method: z.enum(['cash', 'upi', 'khata']).nullable(),
   discount: z.number().int().min(0),
   question: z.object({ itemId: z.string().max(20), field: z.enum(['qty', 'rate']) }).nullable(),
+  check: turnCheck.nullable().optional(), // older apps send no check
+  customerChecked: z.boolean().optional(),
 });
 const turnBody = z.object({
   state: z.union([z.string().max(50_000), z.record(z.string(), z.unknown())]).nullable().optional(), // null = new bill
@@ -184,6 +193,8 @@ const turnBody = z.object({
   // true = read out every item in the confirm reply (the app's "Read out every item" setting).
   // Form-data sends it as text.
   readAll: z.union([z.boolean(), z.enum(['true', 'false']).transform(v => v === 'true')]).optional(),
+  // A tapped answer to "did you mean?": 0 = what was heard, 1 = the other value / customer.
+  choose: z.union([z.literal(0), z.literal(1), z.enum(['0', '1']).transform(v => (v === '1' ? 1 : 0) as 0 | 1)]).optional(),
 });
 
 function parseState(raw: unknown): TurnState {
@@ -216,6 +227,30 @@ router.post('/turn', upload.single('audio'), async (req, res) => {
   const state = parseState(body.state);
   const { language: shopLanguage, customers } = await loadContext(req);
   const lang = body.language ?? shopLanguage;
+  const owner = shopId(req);
+  const customerName = (id: string) => customers.find(c => c.id === id)?.customerName;
+  const replyFor = (next: TurnState) => {
+    const c = customers.find(x => x.id === next.customerId) ?? null;
+    return buildReply(next, lang, c && { name: c.customerName, pastDues: c.pastDues }, { readAll: body.readAll, customerName });
+  };
+
+  if (body.choose != null && state.check) {
+    const picked = applyChoice(state, body.choose);
+    const prices = await knownPrices(owner, picked.items.flatMap(i => [i.name, i.localName]));
+    picked.check = picked.question ? null : findCheck(picked, { prices, priceKey });
+    const c = customers.find(x => x.id === picked.customerId) ?? null;
+    res.json({
+      heard: true,
+      transcript: '',
+      state: picked,
+      customer: c && { id: c.id, name: c.customerName, pastDues: c.pastDues },
+      spokenCustomerName: null,
+      totals: totals(picked),
+      reply: replyFor(picked),
+      timings: { sttMs: 0, llmMs: 0 },
+    });
+    return;
+  }
 
   let said = body.text?.trim() ?? '';
   let stt: Awaited<ReturnType<typeof runStt>> | null = null;
@@ -241,20 +276,28 @@ router.post('/turn', upload.single('audio'), async (req, res) => {
     return;
   }
 
+  // Item names follow the language the shopkeeper actually spoke (Gnani detects it), so a Telugu
+  // bill gets Telugu names even when the app is in English; typed turns use the app language.
+  const spoken = stt?.detectedLanguage?.slice(0, 2);
+  const nameLang: typeof lang = spoken === 'te' || spoken === 'hi' || spoken === 'en' ? spoken : lang;
   const { data: edits, ms } = await readTurn(
     said,
     state,
     customers.map(c => ({ id: c.id, name: c.customerName })),
-    lang,
+    nameLang,
   );
-  // "Yes" to the "Save?" read-back: nothing changes, the app saves the bill.
-  const wasComplete = state.items.length > 0 && !state.question;
+  // "Yes" to the "Save?" read-back: nothing changes, the app saves the bill. Never while a
+  // "did you mean?" question is open: that needs a real answer first.
+  const wasComplete = state.items.length > 0 && !state.question && !state.check;
   const confirmed = wasComplete && edits.confirmed && edits.operations.length === 0;
-  const next = confirmed ? state : applyEdits(state, edits, new Set(customers.map(c => c.id)));
+  const next = confirmed ? state : applyEdits(state, edits, new Set(customers.map(c => c.id)), nameLang);
+  if (!confirmed && !next.question) {
+    const prices = await knownPrices(owner, next.items.flatMap(i => [i.name, i.localName]));
+    const similar = edits.similarCustomerId && customers.some(c => c.id === edits.similarCustomerId) ? edits.similarCustomerId : null;
+    next.check = findCheck(next, { prices, priceKey, similarCustomerId: similar });
+  }
   const customer = findCustomer(next.customerId);
-  const reply = confirmed
-    ? { kind: 'confirmed' as const, text: '' }
-    : buildReply(next, lang, customer && { name: customer.customerName, pastDues: customer.pastDues }, { readAll: body.readAll });
+  const reply = confirmed ? { kind: 'confirmed' as const, text: '' } : replyFor(next);
   res.json({
     heard: true,
     transcript: said,
