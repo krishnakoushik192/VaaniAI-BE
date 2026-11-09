@@ -109,6 +109,29 @@ try {
   assert.equal(r.totals.total, 12000 + 14500 + 4500);
   console.log('✔ one question for three missing prices\n');
 
+  // 7c. "Did you mean?": rice at ₹16/kg (no saved price yet, so the AI's usual price is used)
+  state = null;
+  r = await say('2 kg rice 16 rupees a kilo, 1 soap 40, cash', 'en');
+  assert.equal(r.state.check?.kind, 'amount', JSON.stringify(r.state));
+  assert.match(r.reply.text, /Rice: 60 or 16 rupees\?/i);
+  r = await say('yes', 'en'); // "yes" is not an answer to "60 or 16?": nothing is saved
+  assert.notEqual(r.reply.kind, 'confirmed');
+  r = await say('sixty', 'en');
+  assert.equal(item(r, 'rice').rate, 6000);
+  assert.equal(r.state.check, null);
+  assert.equal(r.reply.kind, 'confirm');
+  console.log('✔ did you mean: ₹16 rice asked as "60 or 16?", answered by voice\n');
+
+  // 7d. The same in Hindi: चीनी (sugar) at ₹15/kg → "50 या 15?", answered "पचास"
+  state = null;
+  r = await say('दो किलो चीनी पंद्रह रुपये किलो, नकद', 'hi');
+  assert.equal(r.state.check?.kind, 'amount', JSON.stringify(r.state));
+  assert.match(r.reply.text, /50 रुपये या 15 रुपये\?/);
+  r = await say('पचास', 'hi');
+  assert.equal(r.state.items[0].rate, 5000);
+  assert.equal(r.reply.kind, 'confirm');
+  console.log('✔ did you mean in Hindi: "50 या 15?" answered by voice\n');
+
   // 8. English app with a real recording (audio upload path)
   state = null;
   const form = new FormData();
@@ -121,7 +144,12 @@ try {
   assert.equal(res.status, 200);
   assert.equal(audioTurn.reply.kind, 'confirm');
   assert.equal(audioTurn.totals.total, 12000 + 14500);
-  console.log('✔ audio turn with English reply\n');
+  // Telugu speech with the app in English: item names in Telugu script, never Hindi letters
+  for (const i of audioTurn.state.items) {
+    assert.match(i.localName, /[ఀ-౿]/, `expected a Telugu name, got ${i.localName}`);
+    assert.doesNotMatch(i.localName, /[ऀ-ॿ]/);
+  }
+  console.log('✔ audio turn with English reply, Telugu item names\n');
 
   // 9. First turn exactly as older apps send it: form-data state "null" (was a 400 bug),
   //    then a follow-up turn whose state is the form-data JSON from the previous answer.
@@ -138,6 +166,20 @@ try {
   const second = await fetch(`${base}/voice/turn`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: form3 });
   assert.equal(second.status, 200);
   console.log('✔ form-data first turn with state "null", then a follow-up turn\n');
+
+  // 10. Two customers whose names sound alike: asked on khata only, never on cash
+  await post('/customers', { customerName: 'Rajesh' });
+  state = null;
+  r = await say('Rajesh, 1 soap 40 rupees, cash', 'en');
+  assert.equal(r.state.check ?? null, null);
+  state = null;
+  r = await say('Rajesh, 1 soap 40 rupees, khata', 'en');
+  assert.equal(r.state.check?.kind, 'customer', JSON.stringify(r.state));
+  assert.match(r.reply.text, /Rajesh or Ramesh\?|Ramesh or Rajesh\?/);
+  r = await say('Rajesh', 'en');
+  assert.equal(r.customer?.name, 'Rajesh');
+  assert.equal(r.state.check, null);
+  console.log('✔ did you mean: Ramesh or Rajesh asked on khata (not on cash) and answered\n');
 
   console.log('All conversation checks passed.');
 } finally {

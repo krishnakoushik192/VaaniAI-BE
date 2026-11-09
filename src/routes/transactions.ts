@@ -6,6 +6,7 @@ import { Shopkeeper } from '../models/Shopkeeper.js';
 import { shopId } from '../middleware/auth.js';
 import { HttpError } from '../lib/errors.js';
 import { billTotal } from '../lib/money.js';
+import { rememberPrices } from '../models/ItemPrice.js';
 
 const router = Router();
 
@@ -117,6 +118,10 @@ router.post('/', async (req, res) => {
     await shop.save({ session });
     return { status: 201, transaction: entry, customer, shopkeeper: shop };
   });
+
+  if (input.kind === 'bill') {
+    await rememberPrices(owner, input.items); // for the voice bill's "did you mean ₹60?" check
+  }
 
   const { status, ...payload } = result;
   res.status(status).json(payload);

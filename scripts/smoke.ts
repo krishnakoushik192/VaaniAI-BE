@@ -100,6 +100,49 @@ try {
   assert.equal(r.body.shopkeeper.duesTotal, 75500);
   step('khata bill: server computes total, dues + shop totals update', true);
 
+  {
+    // "Did you mean?": the bill above saved Rice at ₹60/kg. A voice bill that hears ₹16/kg rice
+    // asks "60 or 16?"; a tapped choice fixes it without speech or AI; ₹62 is not doubted.
+    const { findCheck } = await import('../src/lib/billState.ts');
+    const { knownPrices, priceKey } = await import('../src/models/ItemPrice.ts');
+    const prices = await knownPrices(r.body.shopkeeper.id, ['Rice']);
+    assert.equal(prices.get('rice|kg'), 6000);
+    const rice = { id: 'i1', name: 'Rice', localName: 'Rice', qty: 2, unit: 'kg', rate: 1600 };
+    const s: any = { items: [rice], customerId: null, method: 'cash', discount: 0, question: null };
+    s.check = findCheck(s, { prices, priceKey });
+    assert.deepEqual(s.check, { kind: 'amount', itemId: 'i1', field: 'rate', options: [1600, 6000] });
+    assert.equal(findCheck({ ...s, items: [{ ...rice, rate: 6200 }] }, { prices, priceKey }), null);
+    // no saved price: the AI's usual price is used instead
+    assert.equal(findCheck({ ...s, items: [{ ...rice, name: 'Dal', localName: 'Dal', rate: 1500, usualRate: 11000 }] }, { prices, priceKey }), null);
+    assert.deepEqual(findCheck({ ...s, items: [{ ...rice, name: 'Sugar', localName: 'Sugar', rate: 1500, usualRate: 4500 }] }, { prices, priceKey })?.options, [1500, 5000]);
+
+    const t = await call('POST', '/voice/turn', { state: s, choose: 1, language: 'en' });
+    assert.equal(t.status, 200);
+    assert.equal(t.body.state.items[0].rate, 6000);
+    assert.equal(t.body.state.items[0].checked, true);
+    assert.equal(t.body.state.check, null);
+    assert.equal(t.body.reply.kind, 'confirm');
+    assert.equal(t.body.totals.total, 12000);
+    const { buildReply } = await import('../src/lib/billState.ts');
+    assert.equal(buildReply(s, 'en', null).text, 'Rice: 60 or 16 rupees?');
+    assert.equal(buildReply(s, 'hi', null).text, 'Rice: 60 रुपये या 16 रुपये?');
+    step('did you mean: misheard price flagged from saved price, tapped answer fixes it', true);
+
+    // Item names must be in the spoken language's own script: a Telugu bill never shows Hindi letters.
+    const { inScript, applyEdits, emptyState } = await import('../src/lib/billState.ts');
+    assert.equal(inScript('కందిపప్పు', 'te'), true);
+    assert.equal(inScript('कंदीपप्पू', 'te'), false);
+    assert.equal(inScript('Surf Excel', 'te'), true);
+    assert.equal(inScript('चावल', 'hi'), true);
+    assert.equal(inScript('चावल', 'en'), false);
+    const op = { op: 'add', itemId: null, name: 'Toor Dal', qtySpoken: true, qty: 1, unit: 'kg', ratePerUnit: 70, lineAmount: null, usualRate: null };
+    const edits: any = { customerName: null, matchedCustomerId: null, similarCustomerId: null, paymentMethod: null, discount: null, confirmed: false, operations: [{ ...op, localName: 'कंदीपप्पू' }] };
+    assert.equal(applyEdits(emptyState(), edits, new Set(), 'te').items[0].localName, 'Toor Dal');
+    edits.operations[0].localName = 'కందిపప్పు';
+    assert.equal(applyEdits(emptyState(), edits, new Set(), 'te').items[0].localName, 'కందిపప్పు');
+    step('item names: wrong-script names (Hindi letters on a Telugu bill) fall back to English', true);
+  }
+
   r = await call('POST', '/transactions', bill);
   assert.equal(r.status, 200);
   assert.equal(r.body.customer.pastDues, 75500);
