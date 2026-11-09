@@ -33,6 +33,37 @@ try {
   assert.equal(r.body.shopkeeper.passcodeHash, undefined);
   step('register (passcode hash hidden)', true);
 
+  r = await call('POST', '/auth/check', { mobileNumber: shop.mobileNumber });
+  assert.deepEqual(r.body, { exists: true });
+  r = await call('POST', '/auth/check', { mobileNumber: '9000000999' });
+  assert.deepEqual(r.body, { exists: false });
+  r = await call('POST', '/auth/check', { mobileNumber: '12345' });
+  assert.equal(r.status, 400);
+  step('account check: existing, new and invalid numbers', true);
+
+  {
+    // Voice replies (no AI needed): one question for everything missing, then the short read-back.
+    const { buildReply, nextQuestion } = await import('../src/lib/billState.ts');
+    const items = [
+      { id: 'i1', name: 'Rice', localName: 'Rice', qty: 2, unit: 'kg', rate: 6000 },
+      { id: 'i2', name: 'Oil', localName: 'Oil', qty: 1, unit: 'L', rate: null },
+      { id: 'i3', name: 'Sugar', localName: 'Sugar', qty: 1, unit: 'kg', rate: null },
+    ];
+    const s: any = { items, customerId: null, method: 'cash', discount: 0, question: null };
+    s.question = nextQuestion(s);
+    assert.deepEqual(buildReply(s, 'en', null), { kind: 'question', text: 'Price of Oil and Sugar?' });
+    items[1].rate = 14500;
+    items[2].rate = 4500;
+    s.question = nextQuestion(s);
+    assert.deepEqual(buildReply(s, 'en', { name: 'Ramesh', pastDues: 30000 }), { kind: 'confirm', text: 'Ramesh, 3 items, 310 rupees, cash. Save?' });
+    s.method = 'khata';
+    assert.equal(buildReply(s, 'en', { name: 'Ramesh', pastDues: 30000 }).text, 'Ramesh, 3 items, 310 rupees, khata. Old due 300, total 610. Save?');
+    assert.match(buildReply(s, 'en', null, { readAll: true }).text, /^2 kg Rice, 120 rupees\. 1 litre Oil, 145 rupees\./);
+    assert.match(buildReply(s, 'te', null).text, /3 వస్తువులు, 310 రూపాయలు, ఖాతా\. సేవ్ చేయనా\?/);
+    assert.match(buildReply(s, 'hi', null).text, /3 सामान, 310 रुपये, खाता\. सेव करूँ\?/);
+    step('voice replies: combined question, short read-back in en/te/hi, full read-back on request', true);
+  }
+
   r = await call('POST', '/auth/register', shop);
   assert.equal(r.status, 409);
   step('duplicate mobile rejected', true);

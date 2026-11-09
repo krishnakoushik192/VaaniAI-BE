@@ -181,6 +181,9 @@ const turnBody = z.object({
   state: z.union([z.string().max(50_000), z.record(z.string(), z.unknown())]).nullable().optional(), // null = new bill
   text: z.string().max(5000).optional(), // typed instead of spoken (also used by tests)
   language: z.enum(['te', 'hi', 'en']).optional(), // language the app speaks back in
+  // true = read out every item in the confirm reply (the app's "Read out every item" setting).
+  // Form-data sends it as text.
+  readAll: z.union([z.boolean(), z.enum(['true', 'false']).transform(v => v === 'true')]).optional(),
 });
 
 function parseState(raw: unknown): TurnState {
@@ -244,9 +247,14 @@ router.post('/turn', upload.single('audio'), async (req, res) => {
     customers.map(c => ({ id: c.id, name: c.customerName })),
     lang,
   );
-  const next = applyEdits(state, edits, new Set(customers.map(c => c.id)));
+  // "Yes" to the "Save?" read-back: nothing changes, the app saves the bill.
+  const wasComplete = state.items.length > 0 && !state.question;
+  const confirmed = wasComplete && edits.confirmed && edits.operations.length === 0;
+  const next = confirmed ? state : applyEdits(state, edits, new Set(customers.map(c => c.id)));
   const customer = findCustomer(next.customerId);
-  const reply = buildReply(next, lang, customer && { name: customer.customerName, pastDues: customer.pastDues });
+  const reply = confirmed
+    ? { kind: 'confirmed' as const, text: '' }
+    : buildReply(next, lang, customer && { name: customer.customerName, pastDues: customer.pastDues }, { readAll: body.readAll });
   res.json({
     heard: true,
     transcript: said,
